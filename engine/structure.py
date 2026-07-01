@@ -32,6 +32,12 @@ PREP_MIN_SECONDS, PREP_MAX_SECONDS = 60, 120
 WARMUP_RAMP_MAX = 600   # 10 min CAP (not a target); engine sizes to budget
 COOLDOWN_MAX = 300      # 5 min CAP (not a target)
 
+# Fallback HR warmup staircase used ONLY when a proposal omitted one.
+# Provisional shape, not a rule — the reasoning layer normally provides it.
+DEFAULT_HR_STAIRCASE: list[tuple[int, int, int]] = [
+    (50, 60, 120), (60, 70, 120), (70, 80, 120),
+]
+
 
 def _clamp_prep(seconds: int) -> int:
     return max(PREP_MIN_SECONDS, min(PREP_MAX_SECONDS, seconds))
@@ -89,7 +95,7 @@ def build_warmup_hr_staircase(steps: list[tuple[int, int, int]],
     for (lo, hi, secs) in steps:
         r_lo, r_hi = rpe_for_flat("hr", lo, hi)
         rendered_steps.append(Step(
-            role="warmup_ramp", duration_seconds=secs,
+            role="warmup_step", duration_seconds=secs,
             flat_low=lo, flat_high=hi, rpe_low=r_lo, rpe_high=r_hi,
             rendering=render_step_line(
                 mode="hr", duration_seconds=secs,
@@ -156,6 +162,52 @@ def check_duration_vs_tss(target_tss: float | None, target_if: float | None,
             f"{max_available_seconds/60:.1f} min. "
             f"Highest TSS achievable in that time at this IF is {max_tss:.0f}."
         )
+
+
+def check_zone_feasibility(mode: str, zone_name: str,
+                           target_tss: float | None,
+                           target_if: float | None,
+                           budget_seconds: int | None) -> None:
+    """M4: mathematical conflict detection WITHOUT requiring a user IF.
+
+    The requested zone's top intensity bounds what is achievable: the absolute
+    best case is the entire budget ridden at the zone ceiling. If even that
+    cannot reach the target TSS — or if the target IF exceeds the zone ceiling
+    outright — this is a hard conflict, reported with concrete numbers BEFORE
+    any API call (spec 16.3: report, never force; and never die as a generic
+    'no valid proposal'). Power mode only (TSS/IF are power math). This is a
+    NECESSARY bound, not a sufficient one: structure-level infeasibility is
+    still detected exactly by the intensity resolver.
+    """
+    if mode != "power" or not zone_name:
+        return
+    from .zones import zone_by_name  # local import; zones has no deps on us
+    try:
+        z = zone_by_name(mode, zone_name)
+    except ValueError:
+        return  # invalid zone is reported elsewhere (fail-fast in generators)
+    if z.high_pct is None:
+        return  # open-ended top zone: no ceiling to bound against
+    top_frac = z.high_pct / 100.0
+
+    if target_if is not None and target_if > top_frac:
+        raise ConstraintConflict(
+            f"target IF {target_if:g} exceeds the maximum possible for the "
+            f"{zone_name} zone (top intensity {z.high_pct}% -> IF ceiling "
+            f"{top_frac:.2f}). Choose a lower IF or a higher zone."
+        )
+
+    if target_tss is not None and budget_seconds is not None:
+        max_tss = tssmod.tss_from(budget_seconds, top_frac)
+        if target_tss > max_tss:
+            needed = tssmod.duration_from(target_tss, top_frac)
+            raise ConstraintConflict(
+                f"TSS {target_tss:g} in the {zone_name} zone needs at least "
+                f"{needed/60:.1f} min even at the zone's top intensity "
+                f"({z.high_pct}%); the time budget is "
+                f"{budget_seconds/60:.1f} min. Highest TSS achievable in that "
+                f"time within this zone is ~{max_tss:.0f}."
+            )
 
 
 # --- PROVISIONAL Phase-1 main-set placeholder -------------------------------

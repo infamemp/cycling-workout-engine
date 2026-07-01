@@ -1,11 +1,91 @@
 # Cycling Workout Generator — CHANGELOG & Restore Point
 
-**Restore point date:** 2026-07-01 (updated: budget floor decision)
-**Status:** Specification v2.3 · Engine v0.2.1 · 50 tests passing
+**Restore point date:** 2026-07-01 (updated: full audit fix cycle)
+**Status:** Specification v2.4 · Engine v0.3.0 · 77 tests passing
 
 ---
 
-## 0.0. v0.2.1 — Deliberate loose budget floor (flexibility > exact-minute precision)
+## 0.0. v0.3.0 — Full audit fix cycle (15 findings closed, spec v2.4)
+
+Result of a complete adversarial audit of the codebase against spec v2.3.
+All findings were reproduced with code before fixing; every fix carries
+regression tests. Test count: 50 → 77.
+
+### Critical
+- **C1 — HR mode + catalog crashed** (`generator.py` accessed `warmup.ramp`
+  which is `None` in HR mode). The documented `cli.py` example command
+  crashed. Fixed with mode-safe duration math; regression test added.
+- **C2 — Budget ceiling could be silently violated.** A proposal omitting
+  `warmup/prep/cooldown_seconds` validated with structure=0, then the builder
+  filled large defaults: a 30-min request built a 45-min session. Validation
+  now runs against the EFFECTIVE structure durations the builder will
+  actually use (in HR, the real staircase sum governs the warmup — this also
+  closed M2's budget side).
+- **C3 — The deterministic TSS/IF resolution (spec 16.2) was never wired
+  in.** `solve_work_power_frac` existed and was tested, but the pipeline hit
+  TSS targets by letting Claude guess within ±10%. New module
+  `resolve_intensity.py`: Claude fixes the STRUCTURE; the engine solves the
+  one free variable (dominant work intensity) in closed form, preserving the
+  proposal's internal ratios between work steps (over/under etc.).
+  Infeasibility is reported with the closest achievable TSS (spec 16.3);
+  rounding follows spec 16.4 (integer center, proposed width shrunk
+  symmetrically only to stay in-zone). Hand-calculated reference tests per
+  the spec 16.5 mandate.
+
+### High
+- **A1 — Zone validation only required overlap, not containment.** A
+  75-105% "Tempo" interval passed. Work ranges must now be CONTAINED within
+  their named zone (boundary-inclusive: 75-90% IS valid Tempo; open-ended
+  Neuromuscular checks its lower bound only).
+- **A2 — A requested IF was never verified.** `verify_if_target` added
+  (power mode), symmetric to the TSS check; with the C3 resolver in the path
+  it holds by construction.
+- **A3 — The 80% budget floor was applied to `max_available`.** A maximum is
+  a CEILING, never a target to fill (filling available time is a coaching
+  decision). The floor now applies only to target durations (Day 1 of a
+  progression included); later progression sessions are capped by max only.
+- **A4 — Retries carried no feedback.** The exact rejection reason is now
+  injected into the next attempt's prompt (sessions and progressions), so
+  the model corrects instead of guessing blind.
+
+### Medium
+- **M1 — Spec self-contradiction on ramp RPE.** Section 6.3 and the 11.4
+  examples said a 45-75% ramp → [RPE 1-4] while the implementation note said
+  [RPE 1-5]. Corrected to [RPE 1-5] under the half-open boundary convention
+  (75% falls in Tempo); spec bumped to v2.4.
+- **M2 — Declared `warmup_seconds` vs. real HR staircase sum diverged**
+  silently. The staircase sum now governs (see C2).
+- **M3 — Missing proposal fields leaked `KeyError`.** Steps missing numeric
+  fields, zero durations, or repeats missing/invalid now produce a clean
+  `ProposalRejected`.
+- **M4 — TSS-vs-duration conflicts without a user IF died generically.**
+  New `check_zone_feasibility`: the requested zone's top intensity bounds
+  what is achievable — "TSS 100, max 20 min, Tempo" now reports "needs at
+  least 74.1 min at the zone's top (90%); highest achievable is ~27" BEFORE
+  any API call. A target IF above the zone ceiling is likewise reported.
+
+### Minor / New
+- **m1** — Dead `use_web_search` parameter removed from
+  `anthropic_transport` (the real toggle flows through the transport call).
+- **m2** — HR staircase steps are flat steps, not ramps: role label
+  corrected to `warmup_step`.
+- **m3** — Recovery sanity check now bounds the range's HIGH end (an "easy"
+  80-90% no longer slips through).
+- **N1 — hrTSS-type estimate for HR mode (new spec Section 16.6).**
+  Previously the HR-mode TSS applied power-NP math to %LTHR (physically
+  incoherent). Now: continuous mapping `IF_eq = 1.5·(LTHR fraction) − 0.5`
+  (floored at 0), TSS accumulated segment-wise (no NP — 4th-power weighting
+  models power variability, meaningless on HR). A continuous function, not a
+  zone-table correlation: Section 4's no-cross-correlation rule stands.
+- Shared `DEFAULT_HR_STAIRCASE` constant (duplication removed); over-
+  determined requests (TSS+IF+duration mutually inconsistent) reported per
+  spec 16.1; TSS+IF without duration now derives the implied duration.
+
+---
+
+---
+
+## 0.1. v0.2.1 — Deliberate loose budget floor (flexibility > exact-minute precision)
 
 - **Decision:** the time-budget rule (spec 15/16) already had a hard ceiling
   (never exceed the stated budget). It had no floor — a session could come in
@@ -28,7 +108,7 @@
 
 ---
 
-## 0.1. v0.2.0 — Bilingual requests + Quick Start Guide
+## 0.2. v0.2.0 — Bilingual requests + Quick Start Guide
 
 - **Bilingual natural-language requests (Spanish or English).** The parser
   (`request_parser.py`) now explicitly detects the input language and returns

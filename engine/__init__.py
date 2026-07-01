@@ -4,4 +4,4 @@ See the project README and cycling_workout_generator_specification.md for
 the full design and architecture.
 """
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"

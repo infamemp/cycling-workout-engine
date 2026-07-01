@@ -369,3 +369,74 @@ def test_hr_staircase_respects_10min_limit():
         assert False, "expected limit violation"
     except ValueError:
         pass
+
+
+def test_catalog_records_hr_generation():
+    """Regression (C1): HR mode + catalog crashed with AttributeError because
+    warmup.ramp is None in HR mode (staircase lives in warmup.steps)."""
+    import tempfile, os
+    from engine.models import GenerationRequest
+    from engine.generator import generate_single
+    from engine.catalog import Catalog
+    db = os.path.join(tempfile.mkdtemp(), "hr.sqlite")
+    cat = Catalog(db)
+    sess = generate_single(
+        GenerationRequest(kind="single_session", mode="hr", requested_zone="Tempo"),
+        seed=3, catalog=cat,
+    )
+    assert cat.count() == 1
+    entry = cat.recent(mode="hr", dominant_zone="Tempo")[0]
+    # duration must equal the real built total (staircase + prep + main + cooldown)
+    warm = sess.warmup.prep.duration_seconds + sum(
+        s.duration_seconds for s in sess.warmup.steps)
+    main = sum(b.repeats * sum(s.duration_seconds for s in b.steps)
+               for b in sess.main_set)
+    cool = sum(s.duration_seconds for s in sess.cooldown)
+    assert entry.duration_seconds == warm + main + cool
+    cat.close()
+
+
+# ============================================================
+# hrTSS-type estimate for HR mode (spec 16.6)
+# ============================================================
+
+def test_hr_equivalent_if_anchors():
+    # Anchors: LTHR -> 1.0; 70% LTHR -> 0.55; floor at 0.
+    assert abs(tss.hr_equivalent_if(1.00) - 1.00) < 1e-9
+    assert abs(tss.hr_equivalent_if(0.70) - 0.55) < 1e-9
+    assert tss.hr_equivalent_if(0.20) == 0.0
+
+
+def test_hr_session_tss_hand_calculated():
+    # 30 min at 92% LTHR: IF_eq = 1.5*0.92-0.5 = 0.88
+    # TSS = 0.5h * 0.88^2 * 100 = 38.72
+    segs = [tss.Segment(1800, 0.92)]
+    t, eq_if = tss.hr_session_tss(segs)
+    assert abs(t - 38.72) < 1e-9
+    assert abs(eq_if - 0.88) < 1e-9
+
+
+def test_hr_session_tss_segmentwise_accumulation():
+    # Two segments accumulate independently (no NP-style weighting):
+    # 10 min @ 70% (IF 0.55) -> (1/6)*0.3025*100 = 5.041666...
+    # 20 min @ 92% (IF 0.88) -> (1/3)*0.7744*100 = 25.81333...
+    segs = [tss.Segment(600, 0.70), tss.Segment(1200, 0.92)]
+    t, _ = tss.hr_session_tss(segs)
+    assert abs(t - (5.0416666667 + 25.8133333333)) < 1e-6
+
+
+def test_hr_generation_reports_hrtss():
+    """End-to-end HR session must report the hrTSS-type estimate, not
+    power-NP math applied to %LTHR."""
+    from engine.models import GenerationRequest
+    from engine.generator import generate_single
+    from engine import assembler
+    sess = generate_single(
+        GenerationRequest(kind="single_session", mode="hr", requested_zone="Tempo"),
+        seed=5,
+    )
+    # Recompute independently with the hr path and compare.
+    t, eq = assembler.compute_tss_if(sess.warmup, sess.main_set, sess.cooldown,
+                                     mode="hr")
+    assert abs(sess.estimated_tss - round(t, 1)) < 1e-9
+    assert sess.estimated_tss > 0

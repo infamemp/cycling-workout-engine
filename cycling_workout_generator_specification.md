@@ -1,6 +1,6 @@
 # Cycling Workout Generator — Project Specification
 
-**Status:** Draft v2.3 — added Section 9.6: the engine has NO pre-loaded knowledge base and must never acquire one (a KB degenerates into a template and makes the engine lazy). Reasoning is free reasoning + live web search only. HR-mode warmup/cooldown rework (Section 11) and Phase-1/Phase-2 engine are built and tested (40 tests). Next: multi-week progressions.
+**Status:** Draft v2.4 — (a) Section 6.3/11.4 ramp-RPE examples corrected to the half-open zone-boundary convention: a `45-75%` ramp resolves to `[RPE 1-5]` (75% falls in Tempo), fixing the internal contradiction with the earlier `[RPE 1-4]` examples; (b) Section 16.6 added: hrTSS-type design-time estimate for HR mode; (c) Section 16 hardened in implementation: deterministic work-intensity resolution wired into the pipeline, budget ceiling enforced on effective structure, floor applies to targets only, zone containment (not overlap), rejection feedback on retries, zone-bounded conflict detection without a user IF. Previous: v2.3 (no-KB rule, Section 9.6).
 **Governing principle — engine identity:** the engine has no prescribed menu. It is intelligent and equipped to investigate the methodology and physiology of the required training stimuli in depth, and from that foundation create individual sessions and progressions aligned with sound training principles. Reference material (the athlete's initial stimulus matrix, peer-reviewed sources) is *foundation to reason from*, never a lookup table to copy values out of. This is the core distinction from the monotonous generators this project replaces.
 **Governing principle — coaching boundary:** the engine never defaults a training-methodology decision about *when/whether* to apply work (ramp-rate-over-weeks, recovery-week reduction, periodization shape, athlete readiness). Those belong to a separate coach. An incomplete request is flagged, never filled in. Purely mechanical/software decisions (algebraic solving, log schema, config defaults like a lookback window) and physiological generation decisions (work/recovery structure within a session, sampled by reasoning) remain the engine's legitimate territory.
 **Scope:** This document assumes nothing beyond what is written here. Any behavior not explicitly listed should be treated as undefined and raised for clarification before implementation.
@@ -118,9 +118,9 @@ This table is locked into the data schema.
 Every generated line carries an RPE range, derived from the segment's intensity by one of two rules depending on segment type:
 
 - **Flat-% segment** (single intensity range — main-set work intervals, recovery intervals, fixed cooldown): take the **midpoint** of the % range, identify which zone that midpoint falls into, and assign that zone's RPE band from the table in Section 6.2. Example: `45-55%` → midpoint 50% → Recovery zone → `[RPE 1-2]`.
-- **Ramp segment** (crosses zones — warmups, descending cooldowns): the RPE range spans from the **floor of the lower endpoint's zone band** to the **ceiling of the upper endpoint's zone band**, per the Section 6.2 table. Worked example (illustrative only — the actual ramp `%` values are engine-determined per session, Section 11, so the resulting RPE varies): for a ramp of `45-75%`, lower endpoint 45% = Recovery (band 1–2, floor = 1); upper endpoint 75% = Endurance (band 2–4, ceiling = 4) → `[RPE 1-4]`. The **rule** (floor of lower, ceiling of upper) is fixed; the `[RPE 1-4]` result is just this one example's output, not a constant.
+- **Ramp segment** (crosses zones — warmups, descending cooldowns): the RPE range spans from the **floor of the lower endpoint's zone band** to the **ceiling of the upper endpoint's zone band**, per the Section 6.2 table. Worked example (illustrative only — the actual ramp `%` values are engine-determined per session, Section 11, so the resulting RPE varies): for a ramp of `45-75%`, lower endpoint 45% = Recovery (band 1–2, floor = 1); upper endpoint 75% sits on the Endurance/Tempo boundary and, under the project's half-open zone convention (low ≤ pct < high), falls in **Tempo** (band 3–5, ceiling = 5) → `[RPE 1-5]`. The **rule** (floor of lower, ceiling of upper) is fixed; the `[RPE 1-5]` result is just this one example's output, not a constant.
 
-Note: the canonical source for these RPE bands is this project's Section 6.2 table, **not** the RPE column shown in the intervals.icu syntax reference file (which is based on the standard Coggan zone/RPE table and differs — e.g., it shows Endurance as 2–3, whereas Section 6.2 uses 2–4). Where the two differ, Section 6.2 always governs. This is why the standard warmup resolves to `[RPE 1-4]` here rather than the `[RPE 1-3]` seen in the reference file's examples.
+Note: the canonical source for these RPE bands is this project's Section 6.2 table, **not** the RPE column shown in the intervals.icu syntax reference file (which is based on the standard Coggan zone/RPE table and differs — e.g., it shows Endurance as 2–3, whereas Section 6.2 uses 2–4). Where the two differ, Section 6.2 always governs. This is why a `45-75%` warmup ramp resolves to `[RPE 1-5]` here rather than the `[RPE 1-3]` seen in the reference file's examples.
 
 ## 7. Physiological Validation Model
 
@@ -256,7 +256,7 @@ The generated work, per the requesting zone, structural pattern, and all validat
 ```
 # Warmup
 
-- 10m ramp 45-75% [RPE 1-4]
+- 10m ramp 45-75% [RPE 1-5]
 
 - 2m 45-55% [RPE 1-2]
 
@@ -268,10 +268,10 @@ The generated work, per the requesting zone, structural pattern, and all validat
 
 # Cooldown
 
-- 5m ramp 75-45% [RPE 1-4]
+- 5m ramp 75-45% [RPE 1-5]
 ```
 
-*(Note: the exact RPE of a ramp depends on its endpoints per Section 6.3; e.g. a `45-75%` ramp actually resolves to `[RPE 1-5]` because 75% sits on the Tempo boundary. The values above are illustrative.)*
+*(Note: the exact RPE of a ramp depends on its endpoints per Section 6.3; 75% sits on the Endurance/Tempo boundary and falls in Tempo under the half-open convention, hence `[RPE 1-5]`. The values above are illustrative.)*
 
 A corresponding **HR-mode** session uses a progressive staircase warmup (engine-chosen number of steps) and a minimal single-block cooldown, all in `% LTHR`. Illustrative example (every value engine-determined except the fixed `2m 60-80% LTHR` prep block):
 
@@ -435,6 +435,16 @@ Documented as institutional memory, given the project's prior history of errors 
 - Unit/formula errors (hours vs. seconds, % vs. fraction for IF).
 
 **Mandatory before this module is considered complete:** a unit test suite built from hand-calculated reference cases (known structure + known target TSS/IF → independently verified expected work-segment intensity), not just example-based spot checks.
+
+### 16.6 HR-Mode Design-Time TSS (hrTSS-type estimate)
+
+NP, IF, and power-based TSS (Sections 16.1–16.2) are power math and do not apply to heart rate. For HR-mode sessions the engine reports an **hrTSS-type design-time estimate** instead:
+
+- Each segment's %LTHR midpoint maps to an **equivalent IF** via a continuous linear approximation anchored at physiological references: `IF_eq = 1.5 × (fraction of LTHR) − 0.5`, floored at 0 (LTHR → IF 1.0; ~70% LTHR → IF ~0.55 — power falls faster than HR at low intensities).
+- TSS accumulates **segment-wise**: `Σ (t_hours × IF_eq² × 100)`. Deliberately no NP-style 4th-power weighting — that models power variability physiology and is meaningless applied to heart rate.
+- The session's reported IF is the equivalent IF derived from the whole-session algebra (16.1).
+- This mapping is a **continuous function, not a zone-table correlation** — it does not map the Friel power and HR zone tables to each other (Section 4's rule stands).
+- Same status as the power estimate: a design-time figure; the platform's own computation governs on upload.
 
 ## 17. Generation Catalog & Memory (variety through intelligence, not mechanical comparison)
 

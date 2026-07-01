@@ -57,7 +57,7 @@ class GenerationRequest:
 
 @dataclass
 class Step:
-    role: str                  # warmup_ramp | warmup_prep | work | recovery | cooldown
+    role: str                  # warmup_ramp | warmup_step | warmup_prep | work | recovery | cooldown
     duration_seconds: int
     is_ramp: bool = False
     flat_low: Optional[int] = None

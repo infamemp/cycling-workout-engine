@@ -31,13 +31,20 @@ def _collect_segments(elements: list) -> list[tssmod.Segment]:
     return segs
 
 
-def compute_tss_if(warmup: Warmup, main_set: list, cooldown: list) -> tuple[float, float]:
+def compute_tss_if(warmup: Warmup, main_set: list, cooldown: list,
+                   mode: str = "power") -> tuple[float, float]:
     """Real TSS/IF of the fully-built (rounded) session — spec 16.4: report
-    the real number of what was built, labeled as a design-time estimate."""
+    the real number of what was built, labeled as a design-time estimate.
+
+    Power mode: simplified-NP math (spec 16.2). HR mode: hrTSS-type estimate
+    (spec 16.6) — %LTHR mapped to equivalent IF per segment; NP does not
+    apply to heart rate."""
     segs: list[tssmod.Segment] = []
     segs += _warmup_segments(warmup)
     segs += _collect_segments(main_set)
     segs += _collect_segments(cooldown)
+    if mode == "hr":
+        return tssmod.hr_session_tss(segs)
     return tssmod.session_tss(segs), tssmod.intensity_factor(segs)
 
 

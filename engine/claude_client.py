@@ -53,7 +53,8 @@ def build_user_prompt(*, mode: str, zone: str,
                       target_duration_seconds: Optional[int],
                       target_tss: Optional[float],
                       target_if: Optional[float],
-                      recent: list[CatalogEntry]) -> str:
+                      recent: list[CatalogEntry],
+                      rejection_feedback: Optional[str] = None) -> str:
     lines = [
         f"Mode: {mode}",
         f"Requested dominant zone: {zone}",
@@ -64,6 +65,14 @@ def build_user_prompt(*, mode: str, zone: str,
         lines.append(f"Target TSS: {target_tss:g}")
     if target_if is not None:
         lines.append(f"Target IF: {target_if:g}")
+    if target_tss is not None or target_if is not None:
+        lines.append("A TSS/IF target was given: focus on the STRUCTURE "
+                     "(reps, durations, recoveries, pattern) with plausible "
+                     "in-zone intensities; the engine will deterministically "
+                     "resolve the exact dominant work intensity to hit the "
+                     "target. Your proposed work %s set the range width and "
+                     "the internal ratios between work steps, not the final "
+                     "absolute level.")
     if mode == "hr":
         lines.append("HR mode: warmup must be ASCENDING STEPS (a staircase), "
                      "not a ramp. Provide hr_warmup_staircase as ascending "
@@ -75,6 +84,14 @@ def build_user_prompt(*, mode: str, zone: str,
         for e in recent[:10]:
             lines.append(f"  - {e.generated_at[:10]} {e.mode}/{e.dominant_zone}: "
                          f"{e.summary}")
+    if rejection_feedback:
+        lines.append(
+            "\nIMPORTANT — your previous proposal was REJECTED by the "
+            "engine's validation for this exact reason:\n"
+            f"  {rejection_feedback}\n"
+            "Produce a corrected proposal that fixes this specific issue. "
+            "Every parameter the user fixed still applies unchanged."
+        )
     lines.append("\nReturn one propose_workout tool call with your structural "
                  "design for the main set.")
     return "\n".join(lines)
@@ -82,8 +99,7 @@ def build_user_prompt(*, mode: str, zone: str,
 
 # --- Production transport (real SDK) ----------------------------------------
 
-def anthropic_transport(api_key: Optional[str] = None,
-                        use_web_search: bool = False) -> Transport:
+def anthropic_transport(api_key: Optional[str] = None) -> Transport:
     """Build a real transport backed by the anthropic SDK. Imported lazily so
     the module loads (and tests run) without the SDK installed."""
     from anthropic import Anthropic  # lazy import
@@ -122,15 +138,19 @@ def request_proposal(*, transport: Transport, mode: str, zone: str,
                      target_tss: Optional[float] = None,
                      target_if: Optional[float] = None,
                      recent: Optional[list[CatalogEntry]] = None,
-                     use_web_search: bool = False) -> dict:
+                     use_web_search: bool = False,
+                     rejection_feedback: Optional[str] = None) -> dict:
     """Ask the reasoning layer for a structural proposal. Returns the raw
-    proposal dict (still to be validated by proposal.validate_proposal)."""
+    proposal dict (still to be validated by proposal.validate_proposal).
+    `rejection_feedback` (A4): the exact reason the previous attempt was
+    rejected, so the model can correct it instead of guessing blind."""
     system = build_system_prompt()
     user = build_user_prompt(
         mode=mode, zone=zone,
         target_duration_seconds=target_duration_seconds,
         target_tss=target_tss, target_if=target_if,
         recent=recent or [],
+        rejection_feedback=rejection_feedback,
     )
     return transport(system, user, [PROPOSAL_TOOL_SCHEMA], use_web_search)
 
@@ -139,7 +159,8 @@ def request_progression(*, transport: Transport, mode: str, zone: str,
                         initial_session_seconds: Optional[int] = None,
                         max_session_seconds: Optional[int] = None,
                         recent: Optional[list[CatalogEntry]] = None,
-                        use_web_search: bool = False) -> dict:
+                        use_web_search: bool = False,
+                        rejection_feedback: Optional[str] = None) -> dict:
     """Ask the reasoning layer for a full reasoned progression (Section 15).
     Returns the raw progression dict (validate with validate_progression).
 
@@ -188,6 +209,14 @@ def request_progression(*, transport: Transport, mode: str, zone: str,
                      "the wheel; this is your own work, not an external recipe):")
         for e in recent[:10]:
             lines.append(f"  - {e.dominant_zone}: {e.summary}")
+    if rejection_feedback:
+        lines.append(
+            "\nIMPORTANT — your previous progression was REJECTED by the "
+            "engine's validation for this exact reason:\n"
+            f"  {rejection_feedback}\n"
+            "Produce a corrected progression that fixes this specific issue. "
+            "Every parameter the user fixed still applies unchanged."
+        )
     lines.append("\nReturn one propose_progression tool call.")
     user = "\n".join(lines)
     return transport(system, user, [PROGRESSION_TOOL_SCHEMA], use_web_search)

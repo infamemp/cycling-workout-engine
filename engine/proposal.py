@@ -140,7 +140,21 @@ def _zone_names(mode: str) -> set[str]:
     return {z.name for z in zones_for_mode(mode)}
 
 
+def _require_step_fields(step: dict) -> None:
+    """M3: a step missing its numeric fields must produce a clean
+    ProposalRejected, never a leaked KeyError/TypeError."""
+    for f in ("duration_seconds", "low_pct", "high_pct"):
+        v = step.get(f)
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ProposalRejected(
+                f"step is missing or has a non-numeric {f!r}: {step!r}")
+    if step["duration_seconds"] <= 0:
+        raise ProposalRejected(
+            f"step duration_seconds must be positive: {step!r}")
+
+
 def _check_step(mode: str, step: dict, valid_zones: set[str], dominant: str) -> None:
+    _require_step_fields(step)
     lo, hi = step["low_pct"], step["high_pct"]
     if lo > hi:
         raise ProposalRejected(f"step low_pct {lo} > high_pct {hi}")
@@ -150,28 +164,35 @@ def _check_step(mode: str, step: dict, valid_zones: set[str], dominant: str) -> 
     # Recovery segments are "whatever is easy enough" — they are NOT required to
     # sit exactly within a named zone's bounds (a recovery may straddle the
     # Recovery/Aerobic boundary, etc.). Only sanity-check they are genuinely
-    # easy, not accidentally hard.
+    # easy, not accidentally hard. m3: the WHOLE range must be easy — checking
+    # only the low end let an "easy" 80-90% slip through.
     if step.get("is_recovery"):
         # An easy recovery should not exceed roughly endurance/aerobic intensity.
         ceiling = 85
-        if lo > ceiling:
+        if hi > ceiling:
             raise ProposalRejected(
-                f"recovery intensity {lo}-{hi}% too hard (>{ceiling}%)"
+                f"recovery intensity {lo}-{hi}% too hard "
+                f"(upper end exceeds {ceiling}%)"
             )
         return
 
-    # Work segments: zone name must be valid and intensity must sit within it.
+    # Work segments (A1): zone name must be valid and the intensity range must
+    # be CONTAINED within that zone's bounds (boundary-inclusive: 75-90% IS a
+    # valid Tempo range, exactly as Friel writes the zone). Mere overlap is
+    # not enough — a 75-105% "Tempo" interval spans three zones and would
+    # falsify the session's declared stimulus.
     zname = step.get("zone_name", dominant)
     if zname not in valid_zones:
         raise ProposalRejected(
             f"zone {zname!r} not valid in {mode} system (cross-mode mixing forbidden)"
         )
     z = zone_by_name(mode, zname)
-    hi_bound = z.high_pct if z.high_pct is not None else max(hi, z.low_pct)
-    if hi < z.low_pct or lo > hi_bound:
+    hi_repr = z.high_pct if z.high_pct is not None else "open"
+    if lo < z.low_pct or (z.high_pct is not None and hi > z.high_pct):
         raise ProposalRejected(
-            f"intensity {lo}-{hi}% outside zone {zname} bounds "
-            f"[{z.low_pct},{z.high_pct}]"
+            f"intensity {lo}-{hi}% not contained within zone {zname} bounds "
+            f"[{z.low_pct}-{hi_repr}%] — work intensities must sit within "
+            f"their named zone"
         )
 
 
@@ -196,7 +217,9 @@ def _collect_used_zones(main_set: list, dominant_zone: str) -> set[str]:
 
 
 def validate_proposal(proposal: dict, *, mode: str, dominant_zone: str,
-                      total_budget_seconds: int | None = None) -> None:
+                      total_budget_seconds: int | None = None,
+                      enforce_floor: bool = True,
+                      structure_seconds: tuple[int, int, int] | None = None) -> None:
     """Validate a Claude proposal against the hard rules. Raises
     ProposalRejected on the first violation; returns None if acceptable.
 
@@ -249,6 +272,10 @@ def validate_proposal(proposal: dict, *, mode: str, dominant_zone: str,
             inner = el.get("steps")
             if not inner:
                 raise ProposalRejected("repeat element missing steps")
+            reps = el.get("repeats")
+            if isinstance(reps, bool) or not isinstance(reps, int) or reps < 1:
+                raise ProposalRejected(
+                    f"repeat element missing or invalid 'repeats': {reps!r}")
             block_seconds = 0
             for st in inner:
                 if "element" in st:
@@ -257,12 +284,12 @@ def validate_proposal(proposal: dict, *, mode: str, dominant_zone: str,
                 block_seconds += st["duration_seconds"]
                 if not st.get("is_recovery"):
                     z = st.get("zone_name", dominant_zone)
-                    t = st["duration_seconds"] * el["repeats"]
+                    t = st["duration_seconds"] * reps
                     if z == dominant_zone:
                         dominant_work += t
                     else:
                         other_work += t
-            main_set_seconds += block_seconds * el["repeats"]
+            main_set_seconds += block_seconds * reps
         else:
             raise ProposalRejected(f"unknown element kind {kind!r}")
 
@@ -297,31 +324,53 @@ def validate_proposal(proposal: dict, *, mode: str, dominant_zone: str,
     # would push the engine toward padding structure just to hit a number,
     # which is exactly the rigidity this project avoids. Only a genuinely
     # considerable shortfall is caught.
+    #
+    # C2/A3 hardening:
+    #   - `structure_seconds`, when given by the caller, is the EFFECTIVE
+    #     (warmup, prep, cooldown) the builder will actually use — defaults
+    #     already filled, and in HR mode the real staircase sum. This closes
+    #     the bypass where omitted fields validated as 0 but built as caps.
+    #   - `enforce_floor` distinguishes a TARGET duration (floor + ceiling)
+    #     from a MAXIMUM (ceiling only). Filling more of the athlete's
+    #     available time is a coaching decision, never the engine's to force.
     _BUDGET_FLOOR_FRACTION = 0.80  # allow up to 20% under budget with no rejection
     if total_budget_seconds is not None:
-        # Use proposed structure durations if present, else 0 (caller may fill).
-        structure = (warmup_s or 0) + (prep_s or 0) + (cooldown_s or 0)
+        if structure_seconds is not None:
+            w_eff, p_eff, c_eff = structure_seconds
+            if w_eff > 600:
+                raise ProposalRejected(
+                    f"effective warmup {w_eff}s exceeds the 600s cap")
+            if c_eff > 300:
+                raise ProposalRejected(
+                    f"effective cooldown {c_eff}s exceeds the 300s cap")
+        else:
+            w_eff = warmup_s or 0
+            p_eff = prep_s or 0
+            c_eff = cooldown_s or 0
+        structure = w_eff + p_eff + c_eff
         total = structure + main_set_seconds
         if total > total_budget_seconds:
             raise ProposalRejected(
-                f"session total {total}s (warmup {warmup_s or 0} + prep "
-                f"{prep_s or 0} + cooldown {cooldown_s or 0} + main "
+                f"session total {total}s (warmup {w_eff} + prep "
+                f"{p_eff} + cooldown {c_eff} + main "
                 f"{main_set_seconds}) exceeds budget {total_budget_seconds}s "
                 f"by {total - total_budget_seconds}s"
             )
-        floor = total_budget_seconds * _BUDGET_FLOOR_FRACTION
-        if total < floor:
-            raise ProposalRejected(
-                f"session total {total}s is considerably under the "
-                f"{total_budget_seconds}s budget (below the {floor:.0f}s "
-                f"floor) — minor shortfalls are fine, but this gap is too "
-                f"large; use more of the available time"
-            )
+        if enforce_floor:
+            floor = total_budget_seconds * _BUDGET_FLOOR_FRACTION
+            if total < floor:
+                raise ProposalRejected(
+                    f"session total {total}s is considerably under the "
+                    f"{total_budget_seconds}s budget (below the {floor:.0f}s "
+                    f"floor) — minor shortfalls are fine, but this gap is too "
+                    f"large; use more of the available time"
+                )
 
 
 # --- TSS/IF target verification (spec 16.3 — report, never silently accept) --
 
 _TSS_TOLERANCE_FRACTION = 0.10  # accept within +/-10% of the requested target
+_IF_TOLERANCE_FRACTION = 0.05   # IF enters TSS squared; ~5% IF ~= 10% TSS
 
 
 def verify_tss_target(proposal_segments_tss: float, target_tss: float) -> None:
@@ -337,4 +386,18 @@ def verify_tss_target(proposal_segments_tss: float, target_tss: float) -> None:
             f"resulting TSS {proposal_segments_tss:.1f} deviates "
             f"{deviation*100:.0f}% from the requested target {target_tss:g} "
             f"(tolerance is {_TSS_TOLERANCE_FRACTION*100:.0f}%)"
+        )
+
+
+def verify_if_target(built_if: float, target_if: float) -> None:
+    """Symmetric check for a requested IF (A2): the built session's real IF
+    must sit within tolerance of the target — report, never silently accept."""
+    if target_if <= 0:
+        return
+    deviation = abs(built_if - target_if) / target_if
+    if deviation > _IF_TOLERANCE_FRACTION:
+        raise ProposalRejected(
+            f"resulting IF {built_if:.3f} deviates {deviation*100:.0f}% from "
+            f"the requested target {target_if:g} "
+            f"(tolerance is {_IF_TOLERANCE_FRACTION*100:.0f}%)"
         )

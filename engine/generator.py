@@ -47,6 +47,11 @@ def generate_single(req: GenerationRequest, *,
     struct.check_duration_vs_tss(
         req.target_tss, req.target_if, req.max_available_seconds
     )
+    _caps = [x for x in (req.target_duration_seconds,
+                         req.max_available_seconds) if x]
+    struct.check_zone_feasibility(req.mode, req.requested_zone,
+                                  req.target_tss, req.target_if,
+                                  min(_caps) if _caps else None)
 
     zone = zone_by_name(req.mode, req.requested_zone)
     # For the placeholder we need concrete work %s; use the zone's interior.
@@ -90,7 +95,8 @@ def generate_single(req: GenerationRequest, *,
 
     # --- Assemble + real TSS (durable) ---
     markdown = assembler.build_markdown(warmup, main_set, cooldown)
-    est_tss, est_if = assembler.compute_tss_if(warmup, main_set, cooldown)
+    est_tss, est_if = assembler.compute_tss_if(warmup, main_set, cooldown,
+                                                mode=req.mode)
 
     sid = str(uuid.uuid4())[:8]
     summary = (f"{req.requested_zone} {reps}x{work_each//60}min "
@@ -116,11 +122,19 @@ def generate_single(req: GenerationRequest, *,
     )
 
     if catalog is not None:
-        total_dur = sum(
+        # Mode-safe warmup duration: power mode has a single ramp; HR mode has
+        # a staircase in warmup.steps and ramp is None (this previously crashed
+        # with AttributeError on HR + catalog).
+        warmup_dur = warmup.prep.duration_seconds
+        if warmup.steps:
+            warmup_dur += sum(s.duration_seconds for s in warmup.steps)
+        elif warmup.ramp is not None:
+            warmup_dur += warmup.ramp.duration_seconds
+        total_dur = warmup_dur + sum(
             (b.repeats * sum(s.duration_seconds for s in b.steps))
             if hasattr(b, "repeats") else b.duration_seconds
             for b in main_set
-        ) + warmup.ramp.duration_seconds + warmup.prep.duration_seconds + sum(
+        ) + sum(
             (b.repeats * sum(s.duration_seconds for s in b.steps))
             if hasattr(b, "repeats") else b.duration_seconds
             for b in cooldown

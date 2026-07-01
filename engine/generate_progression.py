@@ -63,23 +63,49 @@ def generate_progression(req: GenerationRequest, *,
     # engine researches and grows toward the physiological ceiling itself.
     last_error: Optional[str] = None
     progression: Optional[dict] = None
+    effective_structures: list[tuple[int, int, int]] = []
     for _ in range(_MAX_RETRIES):
         candidate = request_progression(
             transport=transport, mode=req.mode, zone=req.requested_zone,
             initial_session_seconds=initial_session_seconds,
             max_session_seconds=req.max_available_seconds,
             recent=recent, use_web_search=use_web_search,
+            rejection_feedback=last_error,  # A4: correct, don't guess blind
         )
         try:
-            n = len(candidate.get("sessions") or [])
+            sessions_raw = candidate.get("sessions") or []
+            n = len(sessions_raw)
+            # Effective per-session structure durations (defaults filled; HR
+            # staircase sum governs the warmup) — same C2 hardening as
+            # generate_single_v2, so the ceiling can't be bypassed.
+            structures: list[tuple[int, int, int]] = []
+            for sess in sessions_raw:
+                w = sess.get("warmup_seconds", struct.WARMUP_RAMP_MAX)
+                p = sess.get("prep_seconds", struct.PREP_MAX_SECONDS)
+                cd = sess.get("cooldown_seconds", struct.COOLDOWN_MAX)
+                if req.mode == "hr":
+                    st = build_hr_staircase_tuples(sess) or \
+                        list(struct.DEFAULT_HR_STAIRCASE)
+                    w = sum(x[2] for x in st)
+                structures.append((w, p, cd))
             session_budgets = [
                 initial_session_seconds if i == 0 else req.max_available_seconds
                 for i in range(n)
             ]
+            # Day 1's budget is a TARGET (floor applies, spec 15: Day 1 fits
+            # the initial duration); later budgets come from max_available,
+            # which is a CEILING only (A3 — never a target to fill).
+            floor_flags = [
+                (i == 0 and initial_session_seconds is not None)
+                for i in range(n)
+            ]
             validate_progression(candidate, mode=req.mode,
                                  dominant_zone=req.requested_zone,
-                                 session_budgets=session_budgets)
+                                 session_budgets=session_budgets,
+                                 session_structures=structures,
+                                 session_floor_flags=floor_flags)
             progression = candidate
+            effective_structures = structures
             break
         except ProposalRejected as e:
             last_error = str(e)
@@ -93,11 +119,9 @@ def generate_progression(req: GenerationRequest, *,
     sessions: list[GeneratedSession] = []
 
     for idx, sess_proposal in enumerate(progression["sessions"], start=1):
-        # Engine-reasoned structure durations for THIS session (fall back to
-        # caps if Claude omitted them), same pattern as generate_single_v2.
-        warmup_s = sess_proposal.get("warmup_seconds", struct.WARMUP_RAMP_MAX)
-        prep_s = sess_proposal.get("prep_seconds", struct.PREP_MAX_SECONDS)
-        cooldown_s = sess_proposal.get("cooldown_seconds", struct.COOLDOWN_MAX)
+        # Use the SAME effective durations that were validated (C2): defaults
+        # filled, HR staircase sum governing the warmup.
+        warmup_s, prep_s, cooldown_s = effective_structures[idx - 1]
 
         # Mandatory structure per session (deterministic), mode-dependent.
         if req.mode == "power":
@@ -107,13 +131,14 @@ def generate_progression(req: GenerationRequest, *,
                                                   seconds=cooldown_s)
         else:
             stair = build_hr_staircase_tuples(sess_proposal) or \
-                [(50, 60, 120), (60, 70, 120), (70, 80, 120)]
+                list(struct.DEFAULT_HR_STAIRCASE)
             warmup = struct.build_warmup_hr_staircase(stair, prep_seconds=prep_s)
             cooldown = struct.build_cooldown_hr_single(60, 70, seconds=cooldown_s)
 
         main_set = build_main_set(req.mode, sess_proposal)
         markdown = assembler.build_markdown(warmup, main_set, cooldown)
-        est_tss, est_if = assembler.compute_tss_if(warmup, main_set, cooldown)
+        est_tss, est_if = assembler.compute_tss_if(warmup, main_set, cooldown,
+                                                    mode=req.mode)
 
         sid = str(uuid.uuid4())[:8]
         summary = sess_proposal.get("summary",

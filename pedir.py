@@ -123,7 +123,7 @@ def main() -> int:
     )
 
     catalog = Catalog(CATALOG_FILE)
-    gen_t = anthropic_transport(use_web_search=True)
+    gen_t = anthropic_transport()
 
     # 3) Generate (single session or full progression).
     print(S["generating"])

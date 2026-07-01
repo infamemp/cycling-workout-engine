@@ -104,3 +104,39 @@ def solve_work_power_frac(
 class InfeasibleError(ValueError):
     """Raised when a TSS/IF target cannot be met within the given structure.
     Per spec 16.3 the engine reports this rather than forcing a value."""
+
+
+# --- HR-mode design-time TSS (hrTSS-type, spec 16.6) -------------------------
+
+def hr_equivalent_if(lthr_frac: float) -> float:
+    """Map a fraction of LTHR to an equivalent Intensity Factor (hrTSS-type).
+
+    Continuous linear approximation anchored at physiological references:
+    at LTHR (1.00) IF == 1.0; at ~0.70 LTHR IF ~= 0.55 (power falls faster
+    than HR at low intensities). IF_eq = 1.5*h - 0.5, floored at 0.
+
+    This is a CONTINUOUS FUNCTION, not a zone-table mapping — it deliberately
+    does not cross-correlate the Friel power and HR zone tables (spec 4).
+    """
+    return max(0.0, 1.5 * lthr_frac - 0.5)
+
+
+def hr_session_tss(segments: list[Segment]) -> tuple[float, float]:
+    """hrTSS-type design-time estimate for an HR-mode session.
+
+    `segments` carry fractions of LTHR in power_frac. TSS accumulates
+    SEGMENT-WISE: sum(t_hours * IF_eq^2 * 100). No NP — 4th-power weighting
+    models power variability physiology and is meaningless on heart rate.
+
+    Returns (tss, session_equivalent_if) where the equivalent IF is derived
+    from the whole-session algebra (spec 16.1): IF = sqrt(TSS/(hours*100)).
+    """
+    total_t = sum(s.duration_seconds for s in segments)
+    if total_t <= 0:
+        raise ValueError("total duration must be > 0")
+    tss = sum(
+        (s.duration_seconds / 3600.0) * (hr_equivalent_if(s.power_frac) ** 2) * 100.0
+        for s in segments
+    )
+    eq_if = if_from(tss, total_t) if tss > 0 else 0.0
+    return tss, eq_if
