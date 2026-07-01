@@ -1,0 +1,628 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://infame.local/schemas/cycling_workout_engine/v0.1.0",
+  "title": "Cycling Workout Generator \u2014 Engine Data Schema",
+  "description": "LEAN schema (decision 2a): defines the STRUCTURE of the domain and the HARD, INVIOLABLE RULES only. It deliberately does NOT contain a lookup table of prescribed physiological values (e.g. 'Tempo = 3-4 reps x 10-20min'). Those concrete values are reasoned by the engine (deterministic Python core + Claude reasoning/web-search layer), grounded in external reference material (the athlete's stimulus matrix + peer-reviewed literature) that lives OUTSIDE this schema. See spec Sections 9.5, 3, 7.1.",
+  "type": "object",
+  "$defs": {
+    "powerZoneName": {
+      "description": "Friel preset power zones (spec 4.1). Fixed data \u2014 genuinely fixed, so it belongs here. SweetSpot is an overlay, not a sequential zone.",
+      "type": "string",
+      "enum": [
+        "ActiveRecovery",
+        "Endurance",
+        "Tempo",
+        "Threshold",
+        "VO2Max",
+        "Anaerobic",
+        "Neuromuscular",
+        "SweetSpot"
+      ]
+    },
+    "hrZoneName": {
+      "description": "Friel preset HR zones (spec 4.2), anchored to LTHR only. NEVER cross-correlated with power zones (spec 4 critical rule).",
+      "type": "string",
+      "enum": [
+        "Recovery",
+        "Aerobic",
+        "Tempo",
+        "SubThreshold",
+        "SuperThreshold",
+        "AerobicCapacity",
+        "Anaerobic"
+      ]
+    },
+    "mode": {
+      "description": "Generation mode. Power is primary/default; HR is secondary (LTHR-anchored). A single request is one mode only \u2014 the two zone systems are never mixed (spec 4).",
+      "type": "string",
+      "enum": [
+        "power",
+        "hr"
+      ]
+    },
+    "percentRange": {
+      "description": "An intensity range as integer percents. For power: % of FTP. For HR: % of LTHR. Output is ALWAYS a range, never a single value, and ALWAYS percentage-based \u2014 never absolute watts/bpm (spec 4.3). low<=high.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "low",
+        "high"
+      ],
+      "properties": {
+        "low": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "high": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "rpeRange": {
+      "description": "RPE on Borg CR10 (1-10), ALWAYS a range (spec 6.1). Derivation: flat segment -> midpoint of %range -> zone -> band from spec 6.2; ramp segment -> floor of lower endpoint's band to ceiling of upper endpoint's band (spec 6.3). Single-value only as [1,1] or [10,10].",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "low",
+        "high"
+      ],
+      "properties": {
+        "low": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "high": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        }
+      }
+    },
+    "cadenceRange": {
+      "description": "Optional cadence target in rpm, appearing after the intensity target and before RPE in the grammar (spec 12.2). May be a single value (low==high) or a range. Drills are out of scope (spec 14) \u2014 cadence here is only a target modifier, never a skill drill.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "low",
+        "high"
+      ],
+      "properties": {
+        "low": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 200
+        },
+        "high": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 200
+        }
+      }
+    },
+    "segmentRole": {
+      "description": "What role a single step plays. 'rest' segments ALWAYS carry an explicit % target \u2014 never undefined 'easy'/'coast' (spec 10). 'warmup_prep' is the mandatory fixed 2m 45-55% block at warmup end (spec 11).",
+      "type": "string",
+      "enum": [
+        "warmup_ramp",
+        "warmup_prep",
+        "work",
+        "recovery",
+        "cooldown"
+      ]
+    },
+    "step": {
+      "description": "A single workout line. Resolves to the intervals.icu grammar: duration -> target -> [cadence] -> [RPE] (spec 12.2). Distance targets, freeride, %HR-vs-maxHR, and %Pace are FORBIDDEN and rejected by the output-validation gate (spec 12.3 / 14).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "duration_seconds",
+        "rendering"
+      ],
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/segmentRole"
+        },
+        "duration_seconds": {
+          "description": "Time-based only (this project never uses distance, spec 12.2). Integer seconds; rounding to valid syntax happens at render time (spec 16.4).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "is_ramp": {
+          "description": "True if this step is a gradual ramp (target has distinct start/end). Ramps use the endpoint-span RPE rule (spec 6.3).",
+          "type": "boolean",
+          "default": false
+        },
+        "intensity": {
+          "description": "For a flat step: a single percentRange. For a ramp: see intensity_ramp instead. One of intensity / intensity_ramp must be present.",
+          "$ref": "#/$defs/percentRange"
+        },
+        "intensity_ramp": {
+          "description": "For a ramp step only: the start and end of the gradual change. start may be lower (ascending) or higher (descending) than end.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "start_percent",
+            "end_percent"
+          ],
+          "properties": {
+            "start_percent": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "end_percent": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "cadence": {
+          "$ref": "#/$defs/cadenceRange"
+        },
+        "rpe": {
+          "$ref": "#/$defs/rpeRange"
+        },
+        "rendering": {
+          "description": "The exact, literally-valid intervals.icu syntax line this step compiles to (spec 12.2). This is what gets written to the .md file. MUST pass the output-validation gate (spec 12.3).",
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "description": "Exactly one of flat intensity or ramp must be provided.",
+          "oneOf": [
+            {
+              "required": [
+                "intensity"
+              ],
+              "not": {
+                "required": [
+                  "intensity_ramp"
+                ]
+              }
+            },
+            {
+              "required": [
+                "intensity_ramp"
+              ],
+              "not": {
+                "required": [
+                  "intensity"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "repeatBlock": {
+      "description": "A repeated set of steps. Maps to intervals.icu 'Nx' repeat syntax. NESTED REPEATS ARE FORBIDDEN (spec 12.2) \u2014 a block's steps must all be plain steps, never another repeatBlock. Divided/split patterns are expressed as multiple sequential repeatBlocks, never nesting.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repeats",
+        "steps"
+      ],
+      "properties": {
+        "repeats": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/step"
+          }
+        }
+      }
+    },
+    "sectionElement": {
+      "description": "An element of a session section: either a single step or a (non-nested) repeat block.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/step"
+        },
+        {
+          "$ref": "#/$defs/repeatBlock"
+        }
+      ]
+    },
+    "structuralPatternCategory": {
+      "description": "The expressible structural pattern CATEGORIES (spec 8). These are rule-FORMS, not value tables. 'cluster_sets' is deliberately absent (removed in review M2 as unsupported). The engine may enrich within the dominant/subordinate boundary (spec 17).",
+      "type": "string",
+      "enum": [
+        "continuous",
+        "classic_interval",
+        "pyramidal",
+        "ladder",
+        "over_under",
+        "progressive",
+        "divided_split"
+      ]
+    },
+    "generationRequest": {
+      "title": "GenerationRequest",
+      "description": "What the user asks the engine to produce. The engine OBEYS (spec 3). Any parameter the user fixes is sacred and outside the scope of anti-repetition variation (spec 17).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "kind",
+        "mode"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "single_session",
+            "progression"
+          ]
+        },
+        "mode": {
+          "$ref": "#/$defs/mode"
+        },
+        "requested_zone_power": {
+          "description": "Present only for power-mode requests where the user fixed a zone.",
+          "$ref": "#/$defs/powerZoneName"
+        },
+        "requested_zone_hr": {
+          "description": "Present only for hr-mode requests where the user fixed a zone.",
+          "$ref": "#/$defs/hrZoneName"
+        },
+        "target_duration_seconds": {
+          "description": "Requested total session duration, if specified.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_available_seconds": {
+          "description": "Hard upper bound on session duration (spec 3). May conflict with target_tss/target_if -> infeasibility report, engine never silently picks which to sacrifice (spec 16.3).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "target_tss": {
+          "description": "Optional target Load. Engine resolves via spec 16 algebra. Reported value is the design-time estimate of the ROUNDED workout, not authoritative (spec 16.2/16.4).",
+          "type": "number",
+          "minimum": 0
+        },
+        "target_if": {
+          "description": "Optional target Intensity Factor. Power-mode concept; behavior in hr-mode is engine-reasoned (G4), not a fixed rule here.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2.0
+        },
+        "athlete": {
+          "description": "All optional, graceful degradation (spec 5). Internal-only; NEVER converted to absolute watts/bpm in output (spec 4.3).",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cp_watts": {
+              "description": "Power anchor value = CP (spec 7.2.3). Used only internally for the W'bal sim. 'FTP' is just its display label.",
+              "type": "number",
+              "minimum": 1
+            },
+            "w_prime_joules": {
+              "description": "W' in joules. If absent, CP/W' model does not run; engine relies on physiological foundation (spec 7.1).",
+              "type": "number",
+              "minimum": 1
+            },
+            "lthr_bpm": {
+              "description": "Internal-only LTHR. Independent of the power anchor.",
+              "type": "number",
+              "minimum": 1
+            }
+          }
+        },
+        "progression": {
+          "description": "Required when kind=progression. The load:recovery ratio is user-specified; ramp-between-load-weeks and recovery-week-reduction are REQUIRED explicit params \u2014 engine never invents them (spec 15). Missing -> request flagged incomplete.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "total_weeks",
+            "sessions_per_week",
+            "load_to_recovery_ratio"
+          ],
+          "properties": {
+            "total_weeks": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sessions_per_week": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "load_to_recovery_ratio": {
+              "description": "e.g. '2:1', '3:1', '4:1' (spec 15). Engine cycles the pattern across total_weeks.",
+              "type": "string",
+              "pattern": "^[1-9][0-9]*:[1-9][0-9]*$"
+            },
+            "recovery_week_reduction": {
+              "description": "REQUIRED explicit coaching parameter \u2014 what a recovery week reduces. Engine never defaults this (spec 15).",
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "reduce_duration_pct": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "reduce_session_count_to": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "reduce_intensity_note": {
+                  "type": "string"
+                }
+              }
+            },
+            "load_week_ramp": {
+              "description": "OPTIONAL explicit coaching parameter. If absent, engine does NOT ramp \u2014 repeats requested session(s) unchanged across load weeks (spec 15). Engine never invents a ramp rate.",
+              "type": "string"
+            }
+          }
+        },
+        "artifact_type": {
+          "const": "request",
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "description": "progression block required iff kind=progression.",
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "progression"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "progression"
+            ]
+          }
+        }
+      ]
+    },
+    "generatedSession": {
+      "title": "GeneratedSession",
+      "description": "One fully-rendered session the engine produces. ALWAYS has mandatory Warmup + Main Set + Cooldown (spec 11). Logged to SQLite for anti-repetition (spec 17).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "id",
+        "generated_at",
+        "mode",
+        "dominant_stimulus",
+        "warmup",
+        "main_set",
+        "cooldown",
+        "estimated_tss",
+        "markdown_output"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "generation_seed": {
+          "description": "Random seed used, for reproducibility/audit (spec design note).",
+          "type": "integer"
+        },
+        "mode": {
+          "$ref": "#/$defs/mode"
+        },
+        "progression_id": {
+          "description": "Nullable. Links sessions of the same multi-week request; same progression_id entries don't penalize each other in anti-repetition (spec 17).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dominant_stimulus": {
+          "description": "The stimulus the user requested \u2014 MUST remain dominant (greatest time-in-zone + primary intent). Complementary stimuli are subordinate and may never displace it (spec 17 hard boundary). Zone is validated against the mode-appropriate enum via the top-level conditional rules \u2014 power and HR share zone names (e.g. 'Tempo') but are NEVER mixed (spec 4).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "zone"
+          ],
+          "properties": {
+            "zone": {
+              "type": "string"
+            },
+            "structural_pattern": {
+              "$ref": "#/$defs/structuralPatternCategory"
+            }
+          }
+        },
+        "complementary_stimuli": {
+          "description": "Optional, engine-discovered, open-ended (NOT a fixed list \u2014 spec 17). Subordinate to the dominant stimulus. Used to break monotony while staying coherent with the requested objective.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "zone"
+            ],
+            "properties": {
+              "zone": {
+                "type": "string"
+              },
+              "rationale": {
+                "description": "Why this enrichment is methodologically coherent. May cite web-search-sourced reasoning (spec 9).",
+                "type": "string"
+              }
+            }
+          }
+        },
+        "warmup": {
+          "description": "Mandatory (spec 11). Always an ascending ramp (direction fixed; % engine-determined), followed by the ONE fixed block: 2m 45-55%. Ramp upper limit 10 min; the 2m prep is additional (~12 min total).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ramp",
+            "prep"
+          ],
+          "properties": {
+            "ramp": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/step"
+                }
+              ],
+              "description": "is_ramp=true, role=warmup_ramp, ascending, duration<=600s."
+            },
+            "prep": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/step"
+                }
+              ],
+              "description": "The fixed 2m 45-55% block (role=warmup_prep). The only fixed-value block in the structure (spec 11)."
+            }
+          }
+        },
+        "main_set": {
+          "description": "The generated work (spec 11). Sequence of steps and/or non-nested repeat blocks.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/sectionElement"
+          }
+        },
+        "cooldown": {
+          "description": "Mandatory (spec 11). Either a descending ramp (Form A) or a fixed easy interval (Form B); engine chooses form AND % by session nature. Upper limit 5 min.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/sectionElement"
+          }
+        },
+        "estimated_tss": {
+          "description": "DESIGN-TIME ESTIMATE of the rounded workout, not authoritative (spec 16.2/16.4). Real TSS is whatever intervals.icu/TrainingPeaks computes on upload.",
+          "type": "number",
+          "minimum": 0
+        },
+        "estimated_if": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2.0
+        },
+        "feasibility": {
+          "description": "If the request could not be fully satisfied (e.g. TSS unreachable in max duration, intensity out of zone range), this records the conflict reported to the user \u2014 engine never silently forces a value (spec 16.3).",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "satisfied": {
+              "type": "boolean"
+            },
+            "conflict_report": {
+              "type": "string"
+            }
+          }
+        },
+        "markdown_output": {
+          "description": "The complete .md file content in literal intervals.icu syntax (spec 12.1). Headers (# Warmup / # Main Set / # Cooldown) for organization; every line valid grammar; passes the output-validation gate (spec 12.3).",
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_type": {
+          "const": "session",
+          "type": "string"
+        },
+        "catalog_metadata": {
+          "description": "Descriptive, readable metadata recorded into the SQLite catalog (spec 17.1). MEMORY + reusable library entry, NOT a mechanical fingerprint for equality testing. Variety/progression come from the engine reasoning over the catalog plus physiology and web search (spec 17.2), never from comparing signatures.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "structural_pattern": {
+              "$ref": "#/$defs/structuralPatternCategory"
+            },
+            "summary": {
+              "description": "Human- and engine-readable one-line description of the session (e.g. 'Tempo 4x10min with short VO2 peaks').",
+              "type": "string"
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "description": "Power-mode: all stimulus zones must be valid Friel power zones (spec 4.1). HR zones forbidden \u2014 the two systems are never mixed (spec 4).",
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "power"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "dominant_stimulus": {
+                "properties": {
+                  "zone": {
+                    "$ref": "#/$defs/powerZoneName"
+                  }
+                }
+              },
+              "complementary_stimuli": {
+                "items": {
+                  "properties": {
+                    "zone": {
+                      "$ref": "#/$defs/powerZoneName"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "HR-mode: all stimulus zones must be valid Friel HR zones (spec 4.2), LTHR-anchored.",
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "hr"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "dominant_stimulus": {
+                "properties": {
+                  "zone": {
+                    "$ref": "#/$defs/hrZoneName"
+                  }
+                }
+              },
+              "complementary_stimuli": {
+                "items": {
+                  "properties": {
+                    "zone": {
+                      "$ref": "#/$defs/hrZoneName"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/generationRequest"
+    },
+    {
+      "$ref": "#/$defs/generatedSession"
+    }
+  ]
+}
