@@ -1,7 +1,53 @@
 # Cycling Workout Generator — CHANGELOG & Restore Point
 
-**Restore point date:** 2026-06-30 (updated: post-cleanup pass)
-**Status:** Specification v2.3 · Engine: Phase 1 + Phase 2 + Progressions + Natural-language front-end · 48 tests passing · Bug cleanup pass complete
+**Restore point date:** 2026-07-01 (updated: budget floor decision)
+**Status:** Specification v2.3 · Engine v0.2.1 · 50 tests passing
+
+---
+
+## 0.0. v0.2.1 — Deliberate loose budget floor (flexibility > exact-minute precision)
+
+- **Decision:** the time-budget rule (spec 15/16) already had a hard ceiling
+  (never exceed the stated budget). It had no floor — a session could come in
+  well under budget with no signal. Real-world test: a 60-min request
+  produced a 58-min session (a ~3.3% shortfall) with no issue flagged.
+- **Explicit choice made:** maximize the engine's creative flexibility over
+  exact-minute precision. Minor shortfalls (a couple of minutes) are left as
+  acceptable — the athlete can add time manually (extra warmup, one more rep)
+  if they want the exact total. Forcing an exact match would push the engine
+  toward padding structure just to hit a number, which is the rigidity this
+  project has consistently avoided.
+- **What changed:** added a deliberately loose floor at 80% of the budget —
+  only a genuinely considerable shortfall (e.g. 35 min of a 60-min request)
+  is now rejected; anything above that floor passes with no friction. The
+  ceiling behavior (never exceed) is unchanged.
+- 2 new regression tests (minor shortfall passes; considerable shortfall
+  rejected). Test count: 48 → 50.
+
+---
+
+---
+
+## 0.1. v0.2.0 — Bilingual requests + Quick Start Guide
+
+- **Bilingual natural-language requests (Spanish or English).** The parser
+  (`request_parser.py`) now explicitly detects the input language and returns
+  it as a `language` field; zone-wording examples in the prompt cover both
+  languages for every zone (previously only 2 Spanish examples existed,
+  leaving English behavior unguaranteed/implicit). `interpretation_note` is
+  now guaranteed to mirror the request's language.
+- **`pedir.py` fully bilingual end-to-end.** All fixed status text
+  (interpreting/generating/errors/labels) is now selected from an ES/EN string
+  table based on the detected language, so the whole interaction — not just
+  Claude's interpretation — matches whichever language the user typed in. The
+  no-argument usage message shows both languages (since the language isn't
+  known yet at that point).
+- **Added `QUICKSTART.md`** — a fast, practical, copy-paste usage guide in
+  both Spanish and English (examples, phrasing table, what to expect,
+  uploading to intervals.icu, common issues).
+- No breaking changes; all 48 existing tests still pass unmodified.
+
+---
 
 ---
 

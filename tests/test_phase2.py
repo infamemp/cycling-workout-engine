@@ -356,3 +356,49 @@ def test_undeclared_complementary_zone_rejected():
         assert False, "expected rejection: VO2Max used but not declared"
     except ProposalRejected:
         pass
+
+
+# ============================================================
+# Budget floor: deliberately loose (flexibility prioritized per
+# user decision) - minor shortfalls pass, considerable ones don't
+# ============================================================
+
+def test_minor_budget_shortfall_is_allowed():
+    from engine.proposal import validate_proposal
+    # 58 min of a 60-min budget (real-world case, ~3.3% under) must pass.
+    proposal = {
+        "structural_pattern": "continuous", "summary": "minor shortfall ok",
+        "warmup_seconds": 600, "prep_seconds": 60, "cooldown_seconds": 300,
+        "main_set": [
+            {"element": "step", "duration_seconds": 600, "low_pct": 56,
+             "high_pct": 63, "zone_name": "Endurance"},
+            {"element": "step", "duration_seconds": 600, "low_pct": 63,
+             "high_pct": 68, "zone_name": "Endurance"},
+            {"element": "step", "duration_seconds": 600, "low_pct": 68,
+             "high_pct": 75, "zone_name": "Endurance"},
+            {"element": "repeat", "repeats": 3, "steps": [
+                {"duration_seconds": 180, "low_pct": 68, "high_pct": 75,
+                 "zone_name": "Endurance"},
+                {"duration_seconds": 60, "low_pct": 56, "high_pct": 60,
+                 "zone_name": "Endurance", "is_recovery": True}]},
+        ],
+    }
+    validate_proposal(proposal, mode="power", dominant_zone="Endurance",
+                      total_budget_seconds=3600)  # must not raise
+
+
+def test_considerable_budget_shortfall_is_rejected():
+    from engine.proposal import validate_proposal, ProposalRejected
+    # 35 min of a 60-min budget (~58%, well below the 80% floor) must reject.
+    proposal = {
+        "structural_pattern": "continuous", "summary": "way too short",
+        "warmup_seconds": 300, "prep_seconds": 60, "cooldown_seconds": 120,
+        "main_set": [{"element": "step", "duration_seconds": 1620,
+                      "low_pct": 65, "high_pct": 70, "zone_name": "Endurance"}],
+    }
+    try:
+        validate_proposal(proposal, mode="power", dominant_zone="Endurance",
+                          total_budget_seconds=3600)
+        assert False, "expected rejection: 35min session in a 60min budget"
+    except ProposalRejected:
+        pass

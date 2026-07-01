@@ -1,6 +1,6 @@
 # cycling-workout-engine
 
-**Version:** 0.1.0 (pre-release)
+**Version:** 0.2.1 (pre-release)
 **Status:** Core engine functional — no web/app frontend yet (CLI only)
 **License:** Private / All rights reserved (no open-source license applied)
 
@@ -23,6 +23,10 @@ python pedir.py "resistencia aerobica de 1 hora"
 python pedir.py "una progresion de tempo empezando en 30 minutos"
 python pedir.py "vo2 max 45 min por frecuencia cardiaca"
 ```
+
+Works in **Spanish or English** — the language is auto-detected from your
+request. See [`QUICKSTART.md`](QUICKSTART.md) for a fast, practical usage
+guide with copy-paste examples in both languages.
 
 ## Why this exists
 

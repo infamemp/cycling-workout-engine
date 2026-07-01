@@ -289,6 +289,15 @@ def validate_proposal(proposal: dict, *, mode: str, dominant_zone: str,
         )
 
     # --- Budget conservation (pure arithmetic, spec 15) ---
+    # Decision: the engine gets maximum flexibility to reason the structure
+    # (spec 3/9.6) — the ceiling (never exceed the budget) is a hard rule, but
+    # the floor is deliberately LOOSE. A minor shortfall (e.g. 58 min of a
+    # 60-min request) is fine and left to the athlete to fill manually if they
+    # want (a bit more warmup, one extra rep) — forcing an exact minute match
+    # would push the engine toward padding structure just to hit a number,
+    # which is exactly the rigidity this project avoids. Only a genuinely
+    # considerable shortfall is caught.
+    _BUDGET_FLOOR_FRACTION = 0.80  # allow up to 20% under budget with no rejection
     if total_budget_seconds is not None:
         # Use proposed structure durations if present, else 0 (caller may fill).
         structure = (warmup_s or 0) + (prep_s or 0) + (cooldown_s or 0)
@@ -299,6 +308,14 @@ def validate_proposal(proposal: dict, *, mode: str, dominant_zone: str,
                 f"{prep_s or 0} + cooldown {cooldown_s or 0} + main "
                 f"{main_set_seconds}) exceeds budget {total_budget_seconds}s "
                 f"by {total - total_budget_seconds}s"
+            )
+        floor = total_budget_seconds * _BUDGET_FLOOR_FRACTION
+        if total < floor:
+            raise ProposalRejected(
+                f"session total {total}s is considerably under the "
+                f"{total_budget_seconds}s budget (below the {floor:.0f}s "
+                f"floor) — minor shortfalls are fine, but this gap is too "
+                f"large; use more of the available time"
             )
 
 
